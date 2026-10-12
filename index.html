@@ -7,28 +7,48 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="app">
-    <header class="topbar">
-      <div class="brand">
-        <span class="brand-emoji" id="botEmoji"></span>
-        <div>
-          <h1 id="botName"></h1>
-          <p id="botTagline"></p>
+  <div class="layout">
+
+    <!-- Dark overlay behind the sidebar on phones -->
+    <div id="backdrop" class="backdrop"></div>
+
+    <!-- History sidebar -->
+    <aside id="sidebar" class="sidebar">
+      <div class="sidebar-top">
+        <h2>Chat history</h2>
+        <button type="button" id="sidebarNewBtn" class="sidebar-new">+ New chat</button>
+      </div>
+      <div id="chatList" class="chat-list"></div>
+      <div class="sidebar-bottom">
+        <p id="historyNote" class="history-note">Chats are saved on this device only.</p>
+        <button type="button" id="clearAllBtn" class="clear-all">Clear all history</button>
+      </div>
+    </aside>
+
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <button type="button" id="menuBtn" class="btn btn-ghost menu-btn" aria-label="Open chat history">☰</button>
+          <span class="brand-emoji" id="botEmoji"></span>
+          <div class="brand-text">
+            <h1 id="botName"></h1>
+            <p id="botTagline"></p>
+          </div>
         </div>
+        <div class="actions">
+          <button type="button" id="newChatBtn" class="btn btn-ghost top-new">New chat</button>
+          <button type="button" id="apiKeyBtn" class="btn btn-ghost">API key</button>
+        </div>
+      </header>
+
+      <main id="messages" class="messages" aria-live="polite"></main>
+
+      <div id="starters" class="starters"></div>
+
+      <div class="composer">
+        <textarea id="input" rows="1" placeholder="Type your message... (Enter to send, Shift+Enter for a new line)"></textarea>
+        <button type="button" id="sendBtn" class="btn btn-primary">Send</button>
       </div>
-      <div class="actions">
-        <button type="button" id="newChatBtn" class="btn btn-ghost">New chat</button>
-        <button type="button" id="apiKeyBtn" class="btn btn-ghost">API key</button>
-      </div>
-    </header>
-
-    <main id="messages" class="messages" aria-live="polite"></main>
-
-    <div id="starters" class="starters"></div>
-
-    <div class="composer">
-      <textarea id="input" rows="1" placeholder="Type your message... (Enter to send, Shift+Enter for a new line)"></textarea>
-      <button type="button" id="sendBtn" class="btn btn-primary">Send</button>
     </div>
   </div>
 
