@@ -53,5 +53,32 @@ Rules:
   model: "gemini-flash-latest",
 
   // The main color of the site (a hex color code). Deep royal blue.
-  themeColor: "#1F3C9E"
+  themeColor: "#1F3C9E",
+
+  // =====================================================
+  //  KNOWLEDGE BASE (RAG)
+  //  These settings control how the bot looks up your notes
+  //  in the file knowledge.md before it answers.
+  // =====================================================
+
+  // true = the bot looks up your notes. false = it ignores them.
+  useKnowledge: true,
+
+  // The name of your notes file. It must match the file on GitHub exactly.
+  knowledgeFile: "knowledge.md",
+
+  // How the bot finds notes:
+  // "meaning"  = finds notes with the same MEANING as the question (best)
+  // "keywords" = finds notes that share the same WORDS as the question
+  searchMethod: "meaning",
+
+  // How many notes to send to the AI with each question (try 3, 4 or 5)
+  topK: 3,
+
+  // The Gemini model that turns text into numbers for meaning search
+  embeddingModel: "gemini-embedding-2",
+
+  // Extra rules for using the notes. Make these stricter if the bot ignores
+  // your notes, for example by adding "Answer only from the notes."
+  knowledgeRules: `You will receive NOTES from my knowledge file along with each question. If the notes answer the question, base your answer on them and cite the note numbers like [1]. If they don't, begin with 'I couldn't find that in my notes.' Never invent facts, dates, rules or policies that are not in the notes. This rule is for questions asking for information. If the person is simply telling you about themselves, such as their experience, weights or schedule, reply naturally as their coach and use the notes only where they help.`
 };
