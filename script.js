@@ -1,7 +1,9 @@
 const $=id=>document.getElementById(id);
-const messagesEl=$("messages"),startersEl=$("starters"),inputEl=$("input"),sendBtn=$("sendBtn"),keyModal=$("keyModal"),keyInput=$("keyInput"),rememberBox=$("rememberBox"),keyStatus=$("keyStatus"),sidebarEl=$("sidebar"),backdropEl=$("backdrop"),chatListEl=$("chatList"),historyNote=$("historyNote");
+const messagesEl=$("messages"),startersEl=$("starters"),inputEl=$("input"),sendBtn=$("sendBtn"),keyModal=$("keyModal"),keyInput=$("keyInput"),rememberBox=$("rememberBox"),keyStatus=$("keyStatus"),sidebarEl=$("sidebar"),backdropEl=$("backdrop"),chatListEl=$("chatList"),historyNote=$("historyNote"),kbStatus=$("kbStatus");
 let chats=[],current=null,isBusy=false;
-const CK="kinetix_chats_v1",KK="gemini_api_key";
+const CK="kinetix_chats_v1",KK="gemini_api_key",EK="kinetix_embeddings_v1";
+const CFG={useKnowledge:BOT_CONFIG.useKnowledge!==undefined?BOT_CONFIG.useKnowledge:true,knowledgeFile:BOT_CONFIG.knowledgeFile||"knowledge.md",searchMethod:BOT_CONFIG.searchMethod||"meaning",topK:BOT_CONFIG.topK||3,embeddingModel:BOT_CONFIG.embeddingModel||"gemini-embedding-2",knowledgeRules:BOT_CONFIG.knowledgeRules||""};
+const kb={notes:[],vectors:null,mode:"keywords",loadId:0};
 document.documentElement.style.setProperty("--accent",BOT_CONFIG.themeColor);
 document.title=BOT_CONFIG.name;
 $("botName").textContent=BOT_CONFIG.name;$("botEmoji").textContent=BOT_CONFIG.emoji;$("botTagline").textContent=BOT_CONFIG.tagline;
@@ -15,7 +17,7 @@ const closeKeyModal=()=>keyModal.classList.add("hidden");
 $("apiKeyBtn").onclick=()=>openKeyModal();
 $("keyCancel").onclick=closeKeyModal;
 keyModal.onclick=e=>{if(e.target===keyModal)closeKeyModal()};
-$("keySave").onclick=()=>{const k=keyInput.value.trim();if(!k){keyStatus.textContent="Please paste your key first.";return}if(!saveKey(k,rememberBox.checked))keyStatus.textContent="Your browser blocked saving. The key will work until you close this page.";closeKeyModal()};
+$("keySave").onclick=()=>{const k=keyInput.value.trim();if(!k){keyStatus.textContent="Please paste your key first.";return}if(!saveKey(k,rememberBox.checked))keyStatus.textContent="Your browser blocked saving. The key will work until you close this page.";closeKeyModal();loadKnowledge()};
 $("keyClear").onclick=()=>{removeKey();keyInput.value="";keyStatus.textContent="Key removed."};
 
 /* Saving and loading chats */
@@ -44,6 +46,71 @@ function openChat(id){if(isBusy)return;const f=chats.find(c=>c.id===id);if(!f)re
 function deleteChat(id){if(isBusy||!confirm("Delete this chat? This can't be undone."))return;chats=chats.filter(c=>c.id!==id);persist();if(current&&current.id===id){current=makeChat();renderChat()}renderSidebar()}
 $("clearAllBtn").onclick=()=>{if(isBusy||!chats.length||!confirm("Delete ALL saved chats? This can't be undone."))return;chats=[];persist();current=makeChat();renderChat();renderSidebar();closeSidebar()};
 
+/* Knowledge base (RAG) */
+function setKb(text,isWarn){kbStatus.textContent=text;kbStatus.classList.toggle("warn",!!isWarn)}
+function hash(s){let h=5381;for(let i=0;i<s.length;i++)h=((h<<5)+h+s.charCodeAt(i))|0;return String(h>>>0)+"-"+s.length}
+function reason(e){const s=e&&e.status;if(s===400||s===403)return"API key problem";if(s===404)return"embedding model not found";if(s===429)return"rate limit, try again soon";if(s)return"error "+s;return"can't reach the internet"}
+function parseNotes(md){
+const raw=[];let cur=null;
+for(const line of md.replace(/\r\n?/g,"\n").split("\n")){const m=line.match(/^##\s+(.*\S)\s*$/);if(m){cur={title:m[1].trim(),body:[]};raw.push(cur)}else if(cur)cur.body.push(line)}
+const notes=[];
+raw.forEach(n=>{const body=n.body.join("\n").trim();if(!body)return;
+if(body.length<=1500){notes.push({title:n.title,text:body});return}
+let part=1,chunk="";const t=()=>part===1?n.title:n.title+" (part "+part+")";
+body.split(/\n\s*\n/).forEach(p=>{if(chunk&&(chunk+"\n\n"+p).length>1500){notes.push({title:t(),text:chunk});part++;chunk=p}else chunk=chunk?chunk+"\n\n"+p:p});
+if(chunk)notes.push({title:t(),text:chunk})});
+return notes}
+async function embedBatch(texts){
+const model=CFG.embeddingModel,url="https://generativelanguage.googleapis.com/v1beta/models/"+encodeURIComponent(model)+":batchEmbedContents",out=[];
+for(let i=0;i<texts.length;i+=50){
+const chunk=texts.slice(i,i+50);
+const res=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json","x-goog-api-key":getKey()},body:JSON.stringify({requests:chunk.map(t=>({model:"models/"+model,content:{parts:[{text:t}]}}))})});
+if(!res.ok){const e=new Error("HTTP error");e.status=res.status;throw e}
+const data=await res.json();
+if(!data.embeddings||data.embeddings.length!==chunk.length)throw new Error("Unexpected reply");
+data.embeddings.forEach(x=>out.push(x.values))}
+return out}
+async function loadKnowledge(){
+if(!CFG.useKnowledge){kbStatus.classList.add("hidden");return}
+kbStatus.classList.remove("hidden");
+const id=++kb.loadId;kb.notes=[];kb.vectors=null;kb.mode="keywords";
+setKb("📚 Loading notes…");
+let md;
+try{const res=await fetch(CFG.knowledgeFile+"?v="+Date.now(),{cache:"no-store"});if(!res.ok)throw new Error("missing");md=await res.text()}
+catch(e){if(id===kb.loadId)setKb("📚 Couldn't find "+CFG.knowledgeFile+". Check that the file name is exactly right (all lowercase) and not inside a folder.",true);return}
+if(id!==kb.loadId)return;
+kb.notes=parseNotes(md);
+if(!kb.notes.length){setKb("📚 "+CFG.knowledgeFile+" has no notes. Each note needs ## at the very start of a line, with a space after it.",true);return}
+const n=kb.notes.length+" notes loaded";
+if(CFG.searchMethod!=="meaning"){setKb("📚 "+n+" · keyword search");return}
+if(!getKey()){setKb("📚 "+n+" · keyword search (add your API key to turn on meaning search)");return}
+const fp=hash(md+"|"+CFG.embeddingModel);
+try{const c=JSON.parse(localStorage.getItem(EK)||"null");if(c&&c.fp===fp&&Array.isArray(c.vectors)&&c.vectors.length===kb.notes.length){kb.vectors=c.vectors;kb.mode="meaning";setKb("📚 "+n+" · meaning search");return}}catch(e){}
+try{
+const vecs=await embedBatch(kb.notes.map(x=>"title: "+x.title+" │ text: "+x.text));
+if(id!==kb.loadId)return;
+kb.vectors=vecs;kb.mode="meaning";
+try{localStorage.setItem(EK,JSON.stringify({fp,vectors:vecs.map(v=>v.map(x=>Math.round(x*1e5)/1e5))}))}catch(e){}
+setKb("📚 "+n+" · meaning search")
+}catch(e){if(id===kb.loadId)setKb("📚 "+n+" · keyword search (meaning search failed: "+reason(e)+")",true)}}
+function cosine(a,b){let d=0,x=0,y=0;for(let i=0;i<a.length;i++){d+=a[i]*b[i];x+=a[i]*a[i];y+=b[i]*b[i]}return d/(Math.sqrt(x)*Math.sqrt(y)||1)}
+const STOP=new Set("a an and are as at be but by can do does for from how i if in is it its me my of on or so that the this to was we what when where which who why will with you your about into than then them they there these those have has had not just like want need get got".split(" "));
+function keywordScores(q){
+const terms=[...new Set(q.toLowerCase().replace(/[^a-z0-9\s]/g," ").split(/\s+/).filter(w=>w.length>2&&!STOP.has(w)).map(w=>w.length>4?w.replace(/s$/,""):w))];
+if(!terms.length)return kb.notes.map(()=>0);
+return kb.notes.map(n=>{const t=n.title.toLowerCase(),b=n.text.toLowerCase();let s=0;terms.forEach(w=>{if(t.includes(w))s+=2;else if(b.includes(w))s+=1});return s/(2*terms.length)})}
+async function retrieve(q){
+let scores=null;
+if(kb.mode==="meaning"&&kb.vectors){
+try{const [qv]=await embedBatch(["task: search result │ query: "+q]);scores=kb.vectors.map(v=>cosine(qv,v))}
+catch(e){kb.mode="keywords";setKb("📚 "+kb.notes.length+" notes loaded · keyword search (meaning search failed: "+reason(e)+")",true)}}
+const meaning=!!scores;
+if(!scores)scores=keywordScores(q);
+return kb.notes.map((n,i)=>({title:n.title,text:n.text,score:scores[i]})).filter(n=>meaning||n.score>0).sort((a,b)=>b.score-a.score).slice(0,CFG.topK)}
+function buildPrompt(question,notes){
+const list=notes.length?notes.map((n,i)=>"["+(i+1)+"] "+n.title+"\n"+n.text).join("\n\n"):"(No matching notes were found.)";
+return"NOTES from my knowledge file:\n"+list+"\n\nQUESTION: "+question}
+
 /* Safe formatting (bold + bullets) */
 const esc=t=>t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
 const inline=t=>t.replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>");
@@ -51,34 +118,50 @@ function formatText(text){let html="",inList=false;for(const line of esc(text).s
 
 /* Chat bubbles */
 const scrollDown=()=>{messagesEl.scrollTop=messagesEl.scrollHeight};
-function addBubble(type,text){const d=el("div","bubble "+type);if(type==="bot")d.innerHTML=formatText(text);else d.textContent=text;messagesEl.appendChild(d);scrollDown()}
+function addBubble(type,text,sources){
+const d=el("div","bubble "+type);
+if(type==="bot")d.innerHTML=formatText(text);else d.textContent=text;
+if(type==="bot"&&sources&&sources.length){
+const det=el("details","sources");det.appendChild(el("summary","","📚 Sources"));
+sources.forEach((s,i)=>{const r=el("div","source");r.append(el("strong","","["+(i+1)+"] "+s.title),el("span","source-score"," · score "+Number(s.score).toFixed(2)),el("div","source-snip",s.snippet+(s.snippet.length>=160?"…":"")));det.appendChild(r)});
+d.appendChild(det)}
+messagesEl.appendChild(d);scrollDown()}
 function showThinking(){const d=el("div","bubble bot thinking");d.id="thinkingBubble";d.innerHTML="<span></span><span></span><span></span>";messagesEl.appendChild(d);scrollDown()}
 function hideThinking(){const e=$("thinkingBubble");if(e)e.remove()}
-function renderChat(){messagesEl.innerHTML="";addBubble("bot",BOT_CONFIG.welcomeMessage);current.messages.forEach(m=>m.role==="user"?addBubble("user",m.shown||m.text):addBubble("bot",m.text));if(current.messages.length){startersEl.classList.add("hidden")}else{buildStarters();startersEl.classList.remove("hidden")}}
+function renderChat(){messagesEl.innerHTML="";addBubble("bot",BOT_CONFIG.welcomeMessage);current.messages.forEach(m=>m.role==="user"?addBubble("user",m.shown||m.text):addBubble("bot",m.text,m.sources));if(current.messages.length){startersEl.classList.add("hidden")}else{buildStarters();startersEl.classList.remove("hidden")}}
 
 /* Friendly errors */
 function friendlyError(s){if(s===400||s===403)return'Your API key doesn\'t seem to work. Click the "API key" button and check that you pasted it correctly.';if(s===404)return"I couldn't find that AI model. Check the model name in config.js.";if(s===429)return"Too many requests right now. Please wait a minute and try again.";if(s>=500)return"Google's AI service is having problems. Please try again in a little while.";return"Something went wrong (error "+s+"). Please try again."}
 
 /* Talking to Gemini */
-async function askGemini(){
+async function askGemini(promptOverride,withRules){
 const url="https://generativelanguage.googleapis.com/v1beta/models/"+encodeURIComponent(BOT_CONFIG.model)+":generateContent";
-const res=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json","x-goog-api-key":getKey()},body:JSON.stringify({systemInstruction:{parts:[{text:BOT_CONFIG.systemInstructions}]},contents:current.messages.map(m=>({role:m.role,parts:[{text:m.text}]}))})});
+const sys=BOT_CONFIG.systemInstructions+(withRules&&CFG.knowledgeRules?"\n\n"+CFG.knowledgeRules:"");
+const last=current.messages.length-1;
+const contents=current.messages.map((m,i)=>({role:m.role,parts:[{text:(promptOverride&&i===last)?promptOverride:m.text}]}));
+const res=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json","x-goog-api-key":getKey()},body:JSON.stringify({systemInstruction:{parts:[{text:sys}]},contents})});
 if(!res.ok){const e=new Error("HTTP error");e.status=res.status;throw e}
 const data=await res.json();
 const parts=(data.candidates&&data.candidates[0]&&data.candidates[0].content&&data.candidates[0].content.parts)||[];
 return parts.filter(p=>p.text&&p.thought!==true).map(p=>p.text).join("")}
 
 /* Sending a message */
-async function sendMessage(shownText,sentText){
+async function sendMessage(shownText,sentText,skipKb){
 if(isBusy)return;const shown=(shownText||"").trim();if(!shown)return;
 if(!getKey()){openKeyModal("Please paste your Gemini API key to start chatting.");return}
 isBusy=true;sendBtn.disabled=true;startersEl.classList.add("hidden");
 if(!current.title)current.title=shown.length>40?shown.slice(0,40)+"…":shown;
 addBubble("user",shown);current.messages.push({role:"user",text:sentText||shown,shown});showThinking();
 const undo=()=>{current.messages.pop();if(!current.messages.length)current.title=""};
-try{const reply=await askGemini();hideThinking();
+try{
+let prompt=null,found=null;
+if(CFG.useKnowledge&&!skipKb&&kb.notes.length){found=await retrieve(shown);prompt=buildPrompt(sentText||shown,found)}
+const reply=await askGemini(prompt,!!prompt);hideThinking();
 if(!reply){undo();addBubble("error","I didn't get an answer that time. Please try sending your message again.")}
-else{current.messages.push({role:"model",text:reply});current.updated=Date.now();addBubble("bot",reply);if(!chats.includes(current))chats.push(current);persist();renderSidebar()}
+else{
+const sources=found&&found.length?found.map(s=>({title:s.title,score:Math.round(s.score*100)/100,snippet:s.text.slice(0,160)})):undefined;
+current.messages.push({role:"model",text:reply,sources});current.updated=Date.now();addBubble("bot",reply,sources);
+if(!chats.includes(current))chats.push(current);persist();renderSidebar()}
 }catch(err){hideThinking();undo();addBubble("error",err.status?friendlyError(err.status):"I can't reach the internet. Check your connection and try again.")}
 isBusy=false;sendBtn.disabled=false;inputEl.focus()}
 
@@ -90,9 +173,9 @@ inputEl.addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey&&!e.isCom
 sendBtn.onclick=sendFromInput;
 
 /* Starter buttons and new chat */
-function buildStarters(){startersEl.innerHTML="";BOT_CONFIG.starterQuestions.forEach(q=>{const b=el("button","starter-btn",q);b.type="button";b.onclick=()=>sendMessage(q,"Please ask me this question in your own encouraging words, then wait for my answer: "+q);startersEl.appendChild(b)})}
+function buildStarters(){startersEl.innerHTML="";BOT_CONFIG.starterQuestions.forEach(q=>{const b=el("button","starter-btn",q);b.type="button";b.onclick=()=>sendMessage(q,"Please ask me this question in your own encouraging words, then wait for my answer: "+q,true);startersEl.appendChild(b)})}
 function startNewChat(){if(isBusy)return;current=makeChat();renderChat();renderSidebar();closeSidebar()}
 $("newChatBtn").onclick=startNewChat;$("sidebarNewBtn").onclick=startNewChat;
 
 /* Start */
-chats=loadChats();current=makeChat();renderChat();renderSidebar();
+chats=loadChats();current=makeChat();renderChat();renderSidebar();loadKnowledge();
